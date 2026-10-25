@@ -17,3 +17,6 @@
 /extension/*.tsbuildinfo
 __pycache__/
 *.pyc
+
+# Installation-specific skill notes (hosts, credentials); copied into skill builds, never committed
+/mcp/docs/**/*.local.md

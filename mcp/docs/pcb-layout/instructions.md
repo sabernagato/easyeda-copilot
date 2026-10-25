@@ -67,7 +67,7 @@ Use the topology analysis selectively. Any known ordered path that is substantia
 1. Define the board, holes, blocks, components, and only preflight-justified constraints in one complete placement DSL file.
    With the target PCB open, call `validate_pcb_dsl({ file })` before placement. It reads the linked schematic and PCB context automatically. Fix errors and review warnings/info as described in [intent validation](intent-validation.md). Rerun after changing intent.
 2. If mechanics changed, read `mechanical-validation.md` and run a focused mechanical preview with `solver({ preview: true, placeOnlyComponents: [...] })`.
-3. Call `make_pcb_layout({ file })`. If it returns `status: "running"`, follow [operations.md](../operations.md) and wait until terminal.
+3. On a host without CUDA or Vulkan, such as macOS, connect the [remote placement solver](remote-placement.md) first. Call `make_pcb_layout({ file })`. If it returns `status: "running"`, follow [operations.md](../operations.md) and wait until terminal.
 4. If this is a mechanical preview, inspect it with `mechanical-validation.md`, correct obvious in-scope defects, and obtain mechanical approval. Then remove the preview filters and run the complete DSL. A mechanical preview is never assembled.
 5. Evaluate the completed full placement using [placement verification](verification.md). Read diagnostics and view `previewImagePath` or render `previewSvgPath`. Correct concrete defects using the iteration loop below.
 6. Show the final preview and obtain placement approval unless the user already explicitly authorized applying this placement without another review. Reuse an approval for the same unchanged final result; mechanical approval alone does not approve unreviewed full placement.
