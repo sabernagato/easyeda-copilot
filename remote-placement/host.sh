@@ -27,6 +27,50 @@ install)
     PATH="$node_dir/bin:$PATH" npm install --omit=dev --no-audit --no-fund \
         --registry="${NPM_REGISTRY:-https://registry.npmmirror.com}"
     ;;
+build-backend)
+    # Build the eda-copilot-backend checkout uploaded to $dir/backend-src,
+    # including this host's native solver, and pack it under $dir/builds.
+    # RUST_DIST_MIRROR (e.g. https://mirrors.aliyun.com/rustup) serves the stable
+    # components; each is checked against static.rust-lang.org's own .sha256.
+    export RUSTUP_HOME="$dir/opt/rust/rustup" CARGO_HOME="$dir/opt/rust/cargo"
+    if [ ! -x "$CARGO_HOME/bin/cargo" ]; then
+        if [ -n "${RUST_DIST_MIRROR:-}" ]; then
+            dist="$dir/opt/rust-dist"
+            rm -rf "$dist"
+            mkdir -p "$dist"
+            manifest=$(curl -fsSL "$RUST_DIST_MIRROR/dist/channel-rust-stable.toml")
+            for component in rustc cargo rust-std; do
+                url=$(printf '%s\n' "$manifest" | sed -n -E "s#^xz_url = \"(.*/$component-[0-9.]+-x86_64-unknown-linux-gnu\.tar\.xz)\"#\1#p" | head -n 1)
+                curl -fsSL -o "$dist/$(basename "$url")" "$url"
+                curl -fsSL "$(printf '%s' "$url" | sed "s#^$RUST_DIST_MIRROR#https://static.rust-lang.org#").sha256" |
+                    (cd "$dist" && sha256sum -c -)
+                unpack="$dist/$component"
+                mkdir -p "$unpack"
+                tar -xJf "$dist/$(basename "$url")" -C "$unpack" --strip-components=1
+                "$unpack/install.sh" --prefix="$CARGO_HOME" --disable-ldconfig
+            done
+        else
+            curl -fsSL https://sh.rustup.rs | sh -s -- -y --no-modify-path --profile minimal
+        fi
+    fi
+    if [ -n "${CARGO_SPARSE_MIRROR:-}" ]; then
+        # Downloaded crates are still verified against Cargo.lock checksums.
+        printf '[source.crates-io]\nreplace-with = "mirror"\n\n[source.mirror]\nregistry = "sparse+%s"\n' \
+            "$CARGO_SPARSE_MIRROR" >"$CARGO_HOME/config.toml"
+    else
+        rm -f "$CARGO_HOME/config.toml"
+    fi
+    export PATH="$CARGO_HOME/bin:$node_dir/bin:$PATH"
+    # Outside the re-uploaded source, so a rebuild only recompiles what changed.
+    export CARGO_TARGET_DIR="$dir/cargo-target"
+    cd "$dir/backend-src"
+    npm ci --no-audit --no-fund --registry="${NPM_REGISTRY:-https://registry.npmmirror.com}"
+    npm run build
+    npm run native:build
+    mkdir -p "$dir/builds"
+    archive=$(npm pack --ignore-scripts --pack-destination "$dir/builds" | tail -n 1)
+    echo "file:$dir/builds/$archive"
+    ;;
 start)
     if running; then
         echo "already running (pid $(cat "$pid_file"))"
@@ -66,7 +110,7 @@ logs)
     tail -n "${2:-50}" "$log_file"
     ;;
 *)
-    echo "usage: host.sh install|start|stop|logs [lines]" >&2
+    echo "usage: host.sh install|build-backend|start|stop|logs [lines]" >&2
     exit 2
     ;;
 esac

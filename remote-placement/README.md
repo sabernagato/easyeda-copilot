@@ -36,6 +36,23 @@ Unset the variable to place locally again.
 | `status` | Print the service's `/health` through the tunnel. |
 | `logs [lines]` | Show the service log. |
 | `env FILE` | Upload solver tuning read at start, for example `PCB_GPU_RUNTIME=vulkan`; apply with `restart`. |
+| `build-backend` | Build the eda-copilot-backend checkout named by `EASYEDA_PLACEMENT_BACKEND_SRC` on the GPU host, including its native solver, and print a `file:` spec. |
+
+To run a patched backend, build it on the host and deploy that spec. Keep its package version equal to the one this checkout uses, because the MCP compares versions only:
+
+```sh
+EASYEDA_PLACEMENT_BACKEND_SRC=../eda-copilot-backend remote-placement/remote-placement.sh build-backend
+EASYEDA_PLACEMENT_BACKEND_SPEC=file:/mnt/workspace/easyeda-placement/builds/eda-copilot-backend-0.4.0.tgz \
+  remote-placement/remote-placement.sh deploy
+```
+
+The first build installs a private Rust toolchain under the remote directory. A host far from static.rust-lang.org and crates.io can use nearby mirrors; each toolchain component is still checked against static.rust-lang.org's `.sha256`, and crates against `Cargo.lock`:
+
+```sh
+RUST_DIST_MIRROR=https://mirrors.aliyun.com/rustup \
+CARGO_SPARSE_MIRROR=https://mirrors.aliyun.com/crates.io-index/ \
+EASYEDA_PLACEMENT_BACKEND_SRC=../eda-copilot-backend remote-placement/remote-placement.sh build-backend
+```
 
 `EASYEDA_PLACEMENT_REMOTE_DIR`, `EASYEDA_PLACEMENT_PORT` and `EASYEDA_PLACEMENT_LOCAL_PORT` override the defaults. Set `EASYEDA_PLACEMENT_TOKEN` here and `EASYEDA_COPILOT_PLACEMENT_TOKEN` in the MCP environment to require a bearer token as well.
 

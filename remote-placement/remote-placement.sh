@@ -2,7 +2,7 @@
 # Deploy and reach the remote PCB placement service on a CUDA/Vulkan host.
 #
 #   EASYEDA_PLACEMENT_SSH='-J root@jump.example -p 28029 root@localhost' \
-#     remote-placement/remote-placement.sh deploy|start|stop|restart|tunnel|untunnel|status|logs|up|env FILE
+#     remote-placement/remote-placement.sh deploy|build-backend|start|stop|restart|tunnel|untunnel|status|logs|up|env FILE
 #
 # Then start EasyEDA Copilot with EASYEDA_COPILOT_PLACEMENT_URL=http://127.0.0.1:18787
 set -eu
@@ -30,8 +30,25 @@ tunnel_pid() { pgrep -f -- "-L $forward" || true; }
 health() { curl -fsS -m 10 ${EASYEDA_PLACEMENT_TOKEN:+-H "authorization: Bearer $EASYEDA_PLACEMENT_TOKEN"} "http://127.0.0.1:$local_port/health"; }
 
 case "${1:-}" in
+build-backend)
+    # Build a local eda-copilot-backend checkout on the GPU host; prints the spec for deploy.
+    src=${EASYEDA_PLACEMENT_BACKEND_SRC:?Set EASYEDA_PLACEMENT_BACKEND_SRC to an eda-copilot-backend checkout.}
+    remote "rm -rf '$remote_dir/backend-src' && mkdir -p '$remote_dir/backend-src' '$remote_dir/app'"
+    remote "cat > '$remote_dir/app/host.sh'" <"$here/host.sh"
+    (cd "$src" && COPYFILE_DISABLE=1 tar -czf - --no-xattrs --no-mac-metadata --exclude=node_modules \
+        --exclude=target --exclude=.git --exclude='native/pcb-board-packer/*.node' .) |
+        remote "tar -xzf - -C '$remote_dir/backend-src'"
+    mirrors=""
+    # npm_config_<package>_binary_host_mirror redirects prebuilt native downloads (e.g. canvas).
+    for name in RUST_DIST_MIRROR CARGO_SPARSE_MIRROR NPM_REGISTRY npm_config_canvas_binary_host_mirror; do
+        eval "value=\${$name:-}"
+        if [ -n "$value" ]; then mirrors="$mirrors $name='$value'"; fi
+    done
+    remote "$mirrors sh '$remote_dir/app/host.sh' build-backend"
+    ;;
 deploy)
-    version=$(backend_version)
+    # A custom backend build (from build-backend) must keep the version the MCP pins.
+    version=${EASYEDA_PLACEMENT_BACKEND_SPEC:-$(backend_version)}
     remote "mkdir -p '$remote_dir/app'"
     remote "cat > '$remote_dir/app/server.mjs'" <"$here/server.mjs"
     remote "cat > '$remote_dir/app/host.sh'" <"$here/host.sh"
@@ -83,7 +100,7 @@ up)
     echo
     ;;
 *)
-    echo "usage: $0 deploy|start|stop|restart|tunnel|untunnel|status|logs|up|env FILE" >&2
+    echo "usage: $0 deploy|build-backend|start|stop|restart|tunnel|untunnel|status|logs|up|env FILE" >&2
     exit 2
     ;;
 esac

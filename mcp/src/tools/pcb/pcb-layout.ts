@@ -255,9 +255,9 @@ async function runPcbLayout(
     const remote = remotePlacementEndpoint();
     if (!remote) {
         // The published backend reads this setting when it creates its subtree pool.
-        // Default to half the logical cores (at most 8); an explicit override may use every core.
+        // Default to every logical core but four; an explicit override may use every core.
         const cores = availableParallelism();
-        const workerLimit = Math.max(1, Math.min(8, Math.floor(cores / 2)));
+        const workerLimit = Math.max(1, cores - 4);
         for (const name of ['PCB_LAYOUT_SUBTREE_WORKERS', 'PCB_BOARD_PACKER_THREADS', 'PCB_POST_PLACE_THREADS']) {
             const configured = Number(process.env[name] ?? workerLimit);
             process.env[name] = String(Number.isFinite(configured) ? Math.min(cores, Math.max(0, Math.floor(configured))) : workerLimit);
