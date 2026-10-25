@@ -11,6 +11,10 @@
 
 - Honor explicit `PCB_LAYOUT_SUBTREE_WORKERS`, `PCB_BOARD_PACKER_THREADS` and `PCB_POST_PLACE_THREADS` values up to the number of logical cores instead of clamping them to the default. The default stays at half the logical cores, at most 8. Requires a backend that applies the same rule.
 
+### PCB routing
+
+- Make the critical-before-ordinary routing order mandatory in the skill docs: critical circuits are routed and verified in their own earlier transactions, the single-call `runAll()` shortcut stays only for simple boards without critical circuits, and the docs now state what Hybrid and KRT order within one call and that `priority` is a tie-breaker, not an ordering mechanism.
+
 ### PCB fixes
 
 - Read `ARC`/`CARC` segments in board outlines and copper polygons as sweep angle plus end point and flatten them into points on the arc. The sweep angle was read as a coordinate, so outlines with rounded corners came back with stray points and diagonal edges in `get_current_pcb`, the preview and router regions such as `board()`.

@@ -21,22 +21,30 @@ For new or full-board routing, plan the complete board before splitting work. Es
 - planes, required polygons, and required via stitching;
 - routing scope, net importance, and via preferences.
 
-For a simple single-sided or two-layer board with low placement density and ample routing space, try routing the whole board in one `run_pcb_router_dsl` call with `runAll()`, including the complete net plan, rules and required routing intent. Ground uses pours by default even in this single-call strategy: exclude ordinary ground nets from track routing with `ignoreNets(...)` while declaring their required polygons or planes. Handle any critical ground segment explicitly as described below; full-board intent does not mean routing every GND connection with tracks. Respect the intended routing layers; single-sided routing does not require an unsupported one-layer EasyEDA stack. If the attempt fails verification, leaves unrouted connections or stalls, switch to the scoped transaction workflow below instead of repeating the same full-board attempt.
+Classify every net in the requested scope before writing the first transaction. Critical circuits are power paths, differential pairs, controlled-impedance signals, length-matched groups, crystal/resonator and clock connections, RF paths and sensitive analog/feedback circuits: current capacity, coupling, impedance, timing, noise or local loop geometry constrains their route. Every other net is ordinary. Plan critical routes and their return paths together.
 
-Plan critical routes and their return paths together. The following is a **recommended starting sequence** for scoped transactions. Adapt, combine or reorder passes to suit the board's topology, stack, return paths, existing copper and observed routing results. Ordinary ground connections are provided by pours and checked afterward; an incremental task may need only a local repair. Choose the sequence that satisfies the actual design requirements.
+Route the scope in the following order. The stage boundaries are mandatory: critical circuits must be routed and verified in their own earlier transaction(s) before any ordinary circuit is routed, on every board and layer count. Ordinary ground connections are provided by pours and checked afterward; an incremental task that touches no critical circuit may need only a local repair.
 
 ```text
-Suggested order (adapt to the board):
+Required order:
 CRITICAL CIRCUITS AND RETURNS -> ORDINARY CIRCUITS -> POUR/STITCHING -> GROUND CHECK AND REPAIR -> FINAL CHECKS
 ```
 
-1. **Critical circuits.** Usually begin with power paths, differential pairs, controlled-impedance signals, length-matched groups, crystal/resonator and clock connections, RF paths and sensitive analog/feedback circuits. Critical means that current capacity, coupling, impedance, timing, noise or local loop geometry constrains the route. Give these requirements priority when choosing and evaluating the routing strategy.
-2. **Ordinary circuits.** Route the remaining signal and power connections while preserving critical copper and planned ground-pour space. Exclude ordinary ground nets from track routing; a critical return segment is handled with its critical circuit, not by raising the priority of the entire GND net.
-3. **Pour and stitching.** Generate the chosen ground pours and useful stitching. Earlier reference copper can remain or be created when critical routing needs it.
+1. **Critical circuits.** Route every critical circuit in scope, together with the return segments it requires, before any ordinary net. Select them with `onlyNets(...)`, or defer the ordinary nets with `ignoreNets(...)`. Declare the complete intent for each circuit in the same transaction: `powerNet` current, `diffPair`, impedance, `matchedGroup` and the stack data they need. Verify the result before continuing. Splitting this stage into several transactions, or combining critical groups that fit in one transaction, is allowed; routing a critical circuit in the same call as ordinary nets is not.
+2. **Ordinary circuits.** Route the remaining signal and power connections only after the critical copper is verified, preserving that copper and the planned ground-pour space. Exclude ordinary ground nets from track routing; a critical return segment is routed in stage 1 with its critical circuit, not by raising the priority of the entire GND net.
+3. **Pour and stitching.** Generate the chosen ground pours and useful stitching. Reference copper is the exception to this position: a reference plane that a controlled-impedance transaction needs is declared in stage 1 and retained; see [copper layers and physical assumptions](#copper-layers-and-physical-assumptions).
 4. **Ground check and repair.** Rebuild and inspect the actual fill and check connectivity. For required pads or islands that remain disconnected, first try a local pour correction or necessary ground vias. Route remaining ground connections with tracks only where the pour cannot provide the required connection, then refill and recheck.
 5. **Final checks.** Verify whole-board connectivity, actual filled copper, critical constraints and native DRC. Recheck affected critical routes after any later repair.
 
-Each transaction is one DSL file and one `run_pcb_router_dsl` call with exactly one terminal. `runAll()` applies the intent declared in that transaction; it does not require routing the entire board in one call. Split transactions when stage boundaries help control scope or inspect progress; combine work when the board permits it. When a particular order matters, express it through scoped calls; `priority` alone does not guarantee that order across the whole board.
+One shortcut exists. When the scope contains no critical circuit, a simple single-sided or two-layer board with low placement density and ample routing space may route the whole scope in one `run_pcb_router_dsl` call with `runAll()`, including the complete net plan, rules and routing intent. Ground still uses pours: exclude ordinary ground nets from track routing with `ignoreNets(...)` while declaring their required polygons or planes; full-board intent does not mean routing every GND connection with tracks. Respect the intended routing layers; single-sided routing does not require an unsupported one-layer EasyEDA stack. If the attempt fails verification, leaves unrouted connections or stalls, switch to the staged transactions instead of repeating the same full-board attempt. A scope with any critical circuit always uses the staged order, however simple the board.
+
+Each transaction is one DSL file and one `run_pcb_router_dsl` call with exactly one terminal. `runAll()` applies the intent declared in that transaction; it does not require routing the entire board in one call. Split a stage further when that helps control scope or inspect progress, and combine work within a stage when the board permits it; never move ordinary work ahead of critical work.
+
+The stage boundaries are separate transactions because one call does not order nets the way the plan needs:
+
+- Up to four copper layers, counting layers reserved for planes, uses Hybrid: EasyEDA WASM first routes every net in the call's scope at once, with no priority ordering. KRT then re-routes only impedance-constrained nets, `matchedGroup` members, differential pairs that carry impedance or overlap a matched group, differential pairs WASM left open, nets with `viaPreference: "forbid"`, per-net `allowedLayers` or an explicit `fanout(...)` request, plus any connections still open. A plain `diffPair` without impedance or a matched group that WASM closes keeps WASM's copper.
+- Above four copper layers, KRT runs first. Within one call it routes declared `diffPair`, `matchedGroup` and impedance-constrained nets in a special stage before ordinary nets. Ordinary nets are batched by compatible layers, via, clearance and width, not by priority; KRT's own ordering decides inside a batch, and `priority` only orders whole batches by their strongest member.
+- Inside a single call, ordering is therefore guaranteed only for declared `diffPair`, `matchedGroup` and impedance-constrained nets, and only above four copper layers. Every other ordering, and every ordering on a board with up to four layers, requires a separate earlier transaction. `priority` is a tie-breaker, never an ordering mechanism.
 
 Use `onlyNets(...)` for a selected group or `ignoreNets(...)` for nets deliberately deferred to another stage. Keep both legs of a differential pair, every member of a length-matched group and the relevant segments of a constrained logical path together. Include the rules and physical stack data needed by each transaction; do not assume that an earlier call persisted the full physical stack.
 
@@ -86,11 +94,11 @@ runCopper();
 
 Use `runCopper()` when only copper generation is needed. Only after checking the rebuilt fill and trying appropriate pour/via corrections, use `onlyNets(...)` with the actual ground net and `runAll()` if the remaining connections require tracks; retain valid copper and include any required plane declarations. One `plane(...)` declaration is one logical zone; `zones: 1` does not identify how many physical layers were filled.
 
-`onlyNets(...)` and `ignoreNets(...)` select routing scope, not the scope of copper declarations or deletion. Usually defer final GND pours and broad stitching until the relevant routes stabilize; retain or create earlier reference copper when the board needs it. For a new impedance reference, follow the [reference-plane guidance](#copper-layers-and-physical-assumptions). If existing zones or vias obstruct a later repair, use scoped cleanup for the diagnosed blockers.
+`onlyNets(...)` and `ignoreNets(...)` select routing scope, not the scope of copper declarations or deletion. Defer final GND pours and broad stitching until the relevant routes stabilize; retain or create earlier reference copper when the board needs it. For a new impedance reference, follow the [reference-plane guidance](#copper-layers-and-physical-assumptions). If existing zones or vias obstruct a later repair, use scoped cleanup for the diagnosed blockers.
 
 ## Board-wide GND stitching
 
-Use stitching where it connects useful GND copper on different layers or provides a required return connection. Do not add a board-wide grid solely because the net is named GND. A broad grid is usually best added during final ground completion; add required return vias whenever the routing strategy needs them.
+Use stitching where it connects useful GND copper on different layers or provides a required return connection. Do not add a board-wide grid solely because the net is named GND. Add a broad grid during final ground completion; add required return vias whenever the routing strategy needs them.
 
 Choose positions and pitch from ground-island connectivity, return-current transitions, RF requirements and clearances. Place required local return vias near the relevant transitions even when a broad grid exists. The `pitchMm: 3` below is an illustrative grid spacing, not a universal electrical rule; the same reasoning applies to `plane(...).stitching.gridMm`.
 
@@ -117,7 +125,7 @@ Keep vias off pads unless the board explicitly requires via-in-pad. Plane stitch
 Let the router derive geometry from the effective rules and declared physical assumptions:
 
 - Use `powerNet("VBUS", { maxCurrentA: 2 })` instead of calculating track width. Add temperature rise, power pads, or tap constraints only when known.
-- Use `priority: "critical"` on eligible `signalNet` or `powerNet` declarations when routing priority is needed for a critical circuit. Keep its semantic constraints too: priority does not replace `powerNet` current intent, `diffPair` coupling, impedance or `matchedGroup` length requirements. Use `high` for secondary preference within a stage and leave ordinary nets at `normal`.
+- `priority` is a tie-breaker inside one call, never an ordering mechanism; it does not guarantee that a net routes first on any board. Set `priority: "critical"` on the `signalNet` or `powerNet` declarations of critical circuits as a preference, and give a circuit that must be routed first its own earlier transaction. Keep its semantic constraints too: priority does not replace `powerNet` current intent, `diffPair` coupling, impedance or `matchedGroup` length requirements. Use `high` for secondary preference within a stage and leave ordinary nets at `normal`.
 - Use `viaPreference: "avoid"` for short or sensitive nets where a planar route is strongly preferred. `forbid` is a prohibitive routing preference, not a replacement for a fabrication/DRC rule.
 - Use semantic impedance in `signalNet` or `diffPair` only with verified stack/reference information.
 - Use `diffPair` for differential pairs and `matchedGroup` for independent nets that require matched lengths; see below.
@@ -140,6 +148,8 @@ runAll();
 Add `impedance`, `gapMm`, `maxSkewMm`, and `maxUncoupledLengthMm` from the actual interface requirements and physical stack. The example declares the pair relation; it does not establish an impedance target or sign off its geometry. Verify that both tracks follow the same corridor with suitable spacing, short uncoupled escapes, compatible transitions and a continuous reference.
 
 Use `matchedGroup` for independent nets whose lengths must match, such as related bus signals. It constrains length without requiring adjacency: equally long routes can traverse opposite sides of the board. It cannot replace `diffPair`. When a differential path crosses series components, declare each physical pair segment and review the complete logical path.
+
+Single-ended high-speed buses such as DDR data/address, RGMII, SDIO and parallel camera/LCD buses, and clocks, are critical circuits. Declare a `matchedGroup` or impedance for them only when the interface has a verified length or impedance requirement; never invent a tolerance. Without such a requirement, route them in their own earlier critical transaction. `priority: "critical"` alone does not route them first.
 
 ## Existing DRC relations
 
@@ -178,7 +188,7 @@ EasyEDA accepts an even copper-layer count from 2 to 32. The routing transaction
 
 `fallbackCopperThicknessOz` is used for current-derived `powerNet` width when a layer has no explicit copper thickness. Impedance calculation requires usable copper and dielectric geometry, permittivity, and a reference plane; a board-thickness number alone is not enough. Report all provisional values and that only the copper-layer count is written to EasyEDA.
 
-For the first controlled-impedance transaction, identify the reference plane before routing. The current compiler needs a solid imported reference or a `plane(...)` declaration as well as the physical stack; a reference-net name alone is insufficient. A declared plane is also generated after that transaction's routing, so it is not a planning-only statement. Retain the resulting zone when it supports the chosen routing strategy. If it blocks a necessary later route, temporarily remove the identified obstructing zone using scoped cleanup, preserve useful critical copper and rebuild the required pour afterward. Clearing a zone solely to follow the suggested stage order is unnecessary. Do not drop the impedance requirement to bypass missing reference data.
+For the first controlled-impedance transaction, identify the reference plane before routing. The current compiler needs a solid imported reference or a `plane(...)` declaration as well as the physical stack; a reference-net name alone is insufficient. A declared plane is also generated after that transaction's routing, so it is not a planning-only statement. Retain the resulting zone when it supports the chosen routing strategy. If it blocks a necessary later route, temporarily remove the identified obstructing zone using scoped cleanup, preserve useful critical copper and rebuild the required pour afterward. Clearing a zone solely to follow the stage order is unnecessary. Do not drop the impedance requirement to bypass missing reference data.
 
 ## Preserve and clear
 
@@ -214,7 +224,7 @@ End every DSL file with exactly one terminal:
 
 1. Open the target PCB and call `get_pcb_stack_layers` when current layers affect the decision.
 2. For full-board routing, review complete connectivity once and classify every connected net; use targeted inspection for a partial operation. Confirm that the placement and intended layers provide plausible corridors and package escapes before starting the router.
-3. Write the next DSL transaction for the chosen board-specific strategy and call `run_pcb_router_dsl({ file })`. Use the single-call or scoped strategy above, keeping ordinary ground connections pour-first and repairing them only after fill verification. Preserve useful copper and verify affected requirements as work advances.
+3. Write the next DSL transaction for the chosen board-specific strategy and call `run_pcb_router_dsl({ file })`. Follow the staged order above, or the single-call shortcut when the scope has no critical circuit, keeping ordinary ground connections pour-first and repairing them only after fill verification. Preserve useful copper and verify affected requirements as work advances.
 4. If it returns `status: "running"`, call `wait_operation({ operation_id })` until terminal and use its progress to follow the attempt. Follow [operation results](../operations.md) for completion, cancellation, and application errors.
 5. Apply [routing verification](verification.md) to the result. A useful `partial` result is already applied; diagnose its remaining work before choosing a repair.
 6. Repair a concrete blocker using the procedure below, then recheck the affected scope. For full-board work, continue remaining groups and final ground completion. Stop at the requested boundary and report the verified result and unresolved findings.
@@ -237,7 +247,7 @@ Ground-reference background: [TI, High-Speed Layout Guidelines (SCAA082A)](https
 
 ## Layers reserved for planes
 
-On boards with up to four copper layers, Hybrid runs EasyEDA WASM first and KRT afterward for unfinished connections and special constraints. Above four copper layers, KRT runs first. The threshold counts physical copper layers, including layers reserved for planes.
+The engine order depends on the copper-layer count, which includes layers reserved for planes: up to four copper layers uses Hybrid (EasyEDA WASM first, KRT afterward); above four, KRT runs first. See the [routing strategy](#plan-globally-route-in-manageable-transactions) for what each engine orders within one call.
 
 Set `disableRouting: true` on a copper entry in `stack.layers` to forbid new tracks on that layer for every net. For example, a copper entry in a complete four-layer stack can be:
 
