@@ -4,7 +4,9 @@ import * as z from 'zod/v4';
 import { Bridge } from "../../bridge";
 import { textResult } from "../../utils/tool-result";
 import { makePcbLayout as generatePcbLayout, getPcbComponentSizes } from "eda-copilot-backend/pcb";
+import type { PcbLayoutProgress } from "eda-copilot-backend/pcb";
 import type { BoardAssemble as BackendBoardAssemble } from "eda-copilot-backend/types";
+import { makePcbLayoutRemote, remotePlacementEndpoint } from "./remote-placement";
 import { BoardAssemble } from "@copilot/shared/types/pcb/board-assemble";
 import { randomUUID } from "node:crypto";
 import { availableParallelism, tmpdir } from "node:os";
@@ -242,21 +244,28 @@ async function runPcbLayout(
     context.signal.throwIfAborted();
 
     context.setStage('placing');
-    // The published backend reads this setting when it creates its subtree pool.
-    // Default to half the logical cores (at most 8); an explicit override may use every core.
-    const cores = availableParallelism();
-    const workerLimit = Math.max(1, Math.min(8, Math.floor(cores / 2)));
-    for (const name of ['PCB_LAYOUT_SUBTREE_WORKERS', 'PCB_BOARD_PACKER_THREADS', 'PCB_POST_PLACE_THREADS']) {
-        const configured = Number(process.env[name] ?? workerLimit);
-        process.env[name] = String(Number.isFinite(configured) ? Math.min(cores, Math.max(0, Math.floor(configured))) : workerLimit);
-    }
-    const result = await generatePcbLayout(input, {
+    const layoutOptions = {
         ...apiOptions,
         signal: context.signal,
-        onProgress: progress => context.setProgress({
+        onProgress: (progress: PcbLayoutProgress) => context.setProgress({
             message: progress.content, details: progress,
         }),
-    });
+    };
+    // A CUDA/Vulkan host can run the solver for platforms without one (macOS).
+    const remote = remotePlacementEndpoint();
+    if (!remote) {
+        // The published backend reads this setting when it creates its subtree pool.
+        // Default to half the logical cores (at most 8); an explicit override may use every core.
+        const cores = availableParallelism();
+        const workerLimit = Math.max(1, Math.min(8, Math.floor(cores / 2)));
+        for (const name of ['PCB_LAYOUT_SUBTREE_WORKERS', 'PCB_BOARD_PACKER_THREADS', 'PCB_POST_PLACE_THREADS']) {
+            const configured = Number(process.env[name] ?? workerLimit);
+            process.env[name] = String(Number.isFinite(configured) ? Math.min(cores, Math.max(0, Math.floor(configured))) : workerLimit);
+        }
+    }
+    const result = remote
+        ? await makePcbLayoutRemote(remote, input, layoutOptions)
+        : await generatePcbLayout(input, layoutOptions);
     context.signal.throwIfAborted();
     context.setStage('storing_result');
     const stored = await storeMakePcbLayoutResult(result);
